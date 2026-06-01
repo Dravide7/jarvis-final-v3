@@ -1,5 +1,15 @@
 "use client";
+import {
+  addDoc,
+  collection,
+  serverTimestamp
+} from "firebase/firestore";
 import { useState, useEffect, useRef, useCallback } from "react";
+import { User, onAuthStateChanged } from "firebase/auth";
+import { auth } from "@/lib/firebase";
+import { loginWithGoogle } from "@/lib/auth";
+import { doc, setDoc } from "firebase/firestore";
+import { db } from "@/lib/firebase";
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 type Tab       = "home"|"chat"|"tasks"|"files"|"customize";
@@ -143,6 +153,7 @@ function getFileIcon(type:string):string {
 
 // ─── COMPONENT ────────────────────────────────────────────────────────────────
 export default function Dashboard() {
+  const [user, setUser] = useState<User | null>(null);
   const [tab,         setTab]         = useState<Tab>("home");
   const [settings,    setSettings]    = useState<Settings>(DEFAULT_SETTINGS);
   const [shortcuts,   setShortcuts]   = useState<Shortcut[]>([]);
@@ -171,6 +182,26 @@ export default function Dashboard() {
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const fileRef    = useRef<HTMLInputElement>(null);
+  const saveChat = async (
+  role: string,
+  content: string
+) => {
+  if (!auth.currentUser) return;
+
+  await addDoc(collection(db, "chats"), {
+    uid: auth.currentUser.uid,
+    role,
+    content,
+    createdAt: serverTimestamp(),
+  });
+};
+  useEffect(() => {
+  const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+    setUser(currentUser);
+  });
+
+  return () => unsubscribe();
+}, []);
 
   // Init
   useEffect(()=>{
@@ -242,6 +273,20 @@ export default function Dashboard() {
     if(t.includes("open music")){window.open(currentMusic.url,"_blank");speak(`Opening ${currentMusic.label}`);return;}
     setTab("chat");sendChat(text);
   }
+  const saveChatToFirestore = async (
+  role: string,
+  content: string
+) => {
+  if (!auth.currentUser) return;
+
+  await addDoc(collection(db, "chats"), {
+    uid: auth.currentUser.uid,
+    role,
+    content,
+    model: settings.activeModel,
+    createdAt: serverTimestamp(),
+  });
+};
 
   // ── AI CHAT ────────────────────────────────────────────────────────────────
   async function sendChat(inputOverride?:string){
@@ -249,6 +294,7 @@ export default function Dashboard() {
     const apiKey=settings.keys[activeModel.keyName]||"";
     if(!apiKey){speak("Please add an API key in Customize → API Keys");setTab("customize");setCustTab("keys");return;}
     const userMsg:ChatMsg={role:"user",content:text,model:settings.activeModel};
+    await saveChatToFirestore("user", text);
     const newMsgs=[...chatMsgs,userMsg];
     saveChatMsgs(newMsgs);setChatInput("");setChatLoading(true);
     try{
@@ -256,6 +302,7 @@ export default function Dashboard() {
       const d=await r.json();
       if(d.error){const e:ChatMsg={role:"assistant",content:`⚠ ${d.error}`,model:settings.activeModel};saveChatMsgs([...newMsgs,e]);return;}
       const bot:ChatMsg={role:"assistant",content:d.reply,model:settings.activeModel};
+      await saveChatToFirestore("assistant", d.reply);
       saveChatMsgs([...newMsgs,bot]);
       speak(d.reply.slice(0,160));
     }catch(e){saveChatMsgs([...newMsgs,{role:"assistant",content:`Network error: ${e}`,model:settings.activeModel}]);}
@@ -330,6 +377,26 @@ export default function Dashboard() {
 
   return (
     <div style={{position:"relative",zIndex:1,minHeight:"100vh",paddingBottom:"68px"}}>
+    <button
+  onClick={async () => {
+    try {
+      const user = await loginWithGoogle();
+      await setDoc(doc(db, "users", user.uid), {
+          uid: user.uid,
+          name: user.displayName,
+          email: user.email,
+          photo: user.photoURL,
+          lastLogin: Date.now(),
+        });
+      console.log("Logged in:", user);
+      alert(`Welcome ${user.displayName}`);
+    } catch (error) {
+      console.error(error);
+    }
+  }}
+>
+  Login with Google
+</button>
 
       {/* ── TOP BAR ── */}
       <div style={{borderBottom:`1px solid ${accent}22`,background:"rgba(0,0,0,0.96)",backdropFilter:"blur(16px)",padding:"9px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:50}}>
@@ -340,7 +407,7 @@ export default function Dashboard() {
             {greet} PROTOCOL
           </div>
         </div>
-        <div className="font-orb" style={{fontSize:"13px",color:"#00ffff",letterSpacing:"0.1em",textShadow:"0 0 8px #00ffff66"}}>
+        <div className="font-orb" style={{fontSize:"13px",color:"#00ffff",letterSpacing:"0.1em",textShadow:"0 0 8px #00ffff66"}} suppressHydrationWarning>
           {now.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",second:"2-digit"})}
         </div>
         <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
